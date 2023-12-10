@@ -7,6 +7,7 @@ Original file is located at
     https://colab.research.google.com/drive/1PxpT1nxPWh4yKmUnQCy91me1MoY9xgO3
 """
 
+import math
 import torch.nn as nn
 import numpy as np
 import time
@@ -98,9 +99,9 @@ def get_data_loader(batch_size = 64):
     npArray_ab2 = np.load("ab/ab2.npy")
     npArray_ab3 = np.load("ab/ab3.npy")
 
-    # npArray_l = npArray_l[:10000]
-    npArray_ab = np.concatenate((npArray_ab1, npArray_ab2, npArray_ab3))
-
+    npArray_l = npArray_l[:10000]
+    # npArray_ab = np.concatenate((npArray_ab1, npArray_ab2, npArray_ab3))
+    npArray_ab = npArray_ab1
     # print(npArray_l[0])
     # print(npArray_ab[0])
     # print(npArray_ab[0][:][:][1:].shape)
@@ -119,7 +120,7 @@ def get_data_loader(batch_size = 64):
     # print(npArray_ab2.shape)
     # print(npArray_ab3.shape)
     print(npArray_l.shape)
-    relevant_indices = np.arange(1, 25000)
+    relevant_indices = np.arange(1, 10000)
     # relevant_indices = np.arange(1, 5000)
     #relevant_indices = np.arange(1, 10000)
 
@@ -152,13 +153,14 @@ def get_data_loader(batch_size = 64):
     return train_loader, val_loader, test_loader
 
 train_loader, val_loader, test_loader = get_data_loader(64)
-
+'''
 for images, labels in train_loader:
    display(images[:][0])
    display_colored(rgb_image(images[:][0], labels[:][0]))
    display_colored(rgb_image_A(images[:][0], labels[:][0]))
    display_colored(rgb_image_B(images[:][0], labels[:][0]))
    break
+'''
 """
 class Generator(nn.Module):
   def __init__(self):
@@ -208,7 +210,7 @@ class Generator(nn.Module):
             nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
             nn.ReLU(inplace=True),
             nn.ConvTranspose2d(64, 2, kernel_size=4, stride=2, padding=1),
-            # nn.ReLU(),
+            nn.ReLU(),
             # nn.Tanh(),
         )
 
@@ -221,24 +223,33 @@ class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
         self.model = nn.Sequential(
-            nn.Conv2d(2, 64, kernel_size=4, stride=2, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
+            nn.Conv2d(3, 128, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(128, 256, kernel_size=4, stride=2, padding=1),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(256, 1, kernel_size=4, stride=2, padding=1),
-            nn.Sigmoid(),
+            nn.Conv2d(256, 512, kernel_size=4, stride=2, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(512, 1024, kernel_size=4, stride=2, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+
+        self.fcLayer = nn.Sequential(
+            nn.Linear(200704,1),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
-        return self.model(x)
+        x = self.model(x)
+        x = x.view(x.size(0),-1)
+        x = self.fcLayer(x)
+        return x
 
-
+'''
 for images, labels in train_loader:
     print("Input shape:", images.shape)
     print("Labels shape:", labels.shape)
     break
+'''
 print(torch.cuda.is_available())
 generator = Generator()
 discriminator = Discriminator()
@@ -259,13 +270,14 @@ num_epochs = 20
 current_image_grayscale = 0
 generated_color_image = 0
 real_color_image = 0
+testOutput =0
 
 
 for epoch in range(num_epochs):
     start = time.time()
     g_train_loss = 0.0
     d_train_loss = 0.0
-    
+    batch = 0 
     for data in train_loader:
 
         images, labels = data
@@ -279,9 +291,74 @@ for epoch in range(num_epochs):
         labels = labels.cuda()
 
         # Adversarial ground truths
-        valid = torch.ones(images.size(0), 1, 14, 14)
-        fake = torch.zeros(images.size(0), 1, 14, 14)
+        
+        valid = torch.ones(images.size()[0], 1) # real label
+        fake = torch.zeros(images.size()[0], 1) # fake label
+        
+        valid = valid.cuda()
+        fake = fake.cuda() 
 
+        optimizer_generator.zero_grad()
+        optimizer_discriminator.zero_grad()
+
+        noise = images
+        noise = noise.cuda()
+
+        fake_images = generator(noise)
+       
+        noise = noise[:, None, :, :]   
+        
+        complete_fake_image = torch.cat([noise, fake_images], dim = 1)
+        complete_fake_image = complete_fake_image.cuda()
+        
+
+        grayscale = images[:, :, :, None]
+
+        complete_real_image = torch.cat([grayscale, labels], dim = 3)
+        
+        complete_real_image = complete_real_image.reshape((math.ceil(complete_real_image.numel()/(3*224*224)),3,224,224))
+        complete_real_image = complete_real_image.cuda()
+
+        discriminator_images = torch.cat([complete_real_image, complete_fake_image])
+        discriminator_labels = torch.cat([valid, fake])
+        
+        discriminator_images = discriminator_images.cuda()
+        discriminator_labels = discriminator_labels.cuda()
+
+
+        d_loss = bc_criterion(discriminator(discriminator_images), discriminator_labels)
+
+        print(d_loss)
+        d_loss.backward()
+        optimizer_discriminator.step()
+        
+        d_train_loss += d_loss.item()
+
+        generator_loss = bc_criterion(discriminator(complete_fake_image.detach()), valid)
+        
+        print(generator_loss)
+        g_train_loss += generator_loss.item()
+        generator_loss.backward()
+        optimizer_generator.step()
+        
+        testOutput = generator(images)
+        testOutput = testOutput.cpu().detach().numpy()
+        print(testOutput.shape)
+        testOutput = np.transpose(testOutput,(0,2,3,1))
+        print(testOutput.shape)
+        
+        if(batch%10 == 0):
+            display(current_image_grayscale[0])
+            display_colored(rgb_image(current_image_grayscale[0], real_color_image[0]))
+            display_colored(rgb_image(current_image_grayscale[0], testOutput[0]))
+            display_colored(rgb_image_A(current_image_grayscale[0], real_color_image[0]))
+            display_colored(rgb_image_A(current_image_grayscale[0], testOutput[0]))
+            display_colored(rgb_image_B(current_image_grayscale[0], real_color_image[0]))
+            display_colored(rgb_image_B(current_image_grayscale[0], testOutput[0]))
+
+        print(batch)
+        batch+=1
+        """
         # Train Generator
         optimizer_generator.zero_grad()
         g_outputs = generator(images)
@@ -325,28 +402,23 @@ for epoch in range(num_epochs):
         # discriminator(labels)
         optimizer_discriminator.zero_grad()
         real_loss = bc_criterion(discriminator(labels), valid)
-        fake_loss = bc_criterion(discriminator(g_outputs.detach()), fake)
+        fake_loss = bc_criterion(discriminator(g_outputs.detach()), fake)task
         d_loss = (real_loss + fake_loss) / 2
         d_loss.backward()
         optimizer_discriminator.step()
         d_train_loss += d_loss.item()
-
+        """
     generated_color_image = generated_color_image.cpu().detach().numpy()
     g_train_loss = g_train_loss/len(train_loader)
     d_train_loss = d_train_loss/len(train_loader)
     print('Epoch: {} \tG Loss: {:.6f}\tD Loss: {:.6f}'.format(epoch, g_train_loss, d_train_loss))
     print("Time Taken: ", time.time() - start)
 
-    generated_color_image = np.transpose(generated_color_image, (0, 2, 3, 1)).astype('uint8')
-
+    
+    
+    
     # print(real_color_image[0])
     # print("--------------------")
     # print(generated_color_image[0])
 
-display(current_image_grayscale[0])
-display_colored(rgb_image(current_image_grayscale[0], real_color_image[0]))
-display_colored(rgb_image(current_image_grayscale[0], generated_color_image[0]))
-display_colored(rgb_image_A(current_image_grayscale[0], real_color_image[0]))
-display_colored(rgb_image_A(current_image_grayscale[0], generated_color_image[0]))
-display_colored(rgb_image_B(current_image_grayscale[0], real_color_image[0]))
-display_colored(rgb_image_B(current_image_grayscale[0], generated_color_image[0]))
+
